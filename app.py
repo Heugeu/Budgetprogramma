@@ -141,43 +141,67 @@ elif choice == "📁 Categorieën":
         else:
             col2.write(f"({count} items)")
 
-# --- GRAFIEK ---
+# --- GRAFIEK (AANGEPASTE LOGICA VOOR SALDO-EVOLUTIE) ---
 elif choice == "📊 Grafiek":
-    st.subheader("Saldo Verloop")
-    months = st.radio("Periode (maanden)", [1, 2, 3, 4], horizontal=True)
-    start_date = st.date_input("Startdatum grafiek", datetime.now().replace(day=1))
-    end_date = start_date + timedelta(days=30 * months)
+    st.subheader("Evolutie van het Saldo")
+    
+    col_g1, col_g2 = st.columns(2)
+    start_chart_date = col_g1.date_input("Startdatum grafiek", datetime.now().date())
+    months = col_g2.radio("Toon periode (maanden)", [1, 2, 3, 4], horizontal=True)
+    
+    end_chart_date = start_chart_date + timedelta(days=30 * months)
     
     df = get_all_transactions()
     if not df.empty:
-        df['date'] = pd.to_datetime(df['date'])
-        mask = (df['date'] >= pd.Timestamp(start_date)) & (df['date'] <= pd.Timestamp(end_date))
-        filtered_df = df.loc[mask]
+        df['date'] = pd.to_datetime(df['date']).dt.date
         
+        # We filteren op de periode
+        mask = (df['date'] >= start_chart_date) & (df['date'] <= end_chart_date)
+        filtered_df = df.loc[mask].copy()
+        
+        # Om een mooie lijn te krijgen vanaf het startmoment, voegen we het saldo 
+        # van vlak vóór de startdatum toe als beginpunt
+        prev_df = df[df['date'] < start_chart_date]
+        if not prev_df.empty:
+            initial_balance = prev_df['Saldo'].iloc[-1]
+        else:
+            initial_balance = get_start_balance()
+
         if not filtered_df.empty:
-            fig, ax = plt.subplots(figsize=(10, 4))
-            ax.plot(filtered_df['date'], filtered_df['Saldo'], marker='o', color='blue', linewidth=2)
-            ax.fill_between(filtered_df['date'], filtered_df['Saldo'], 0, 
-                            where=(filtered_df['Saldo'] >= 0), color='green', alpha=0.3)
-            ax.fill_between(filtered_df['date'], filtered_df['Saldo'], 0, 
-                            where=(filtered_df['Saldo'] < 0), color='red', alpha=0.3)
-            ax.axhline(0, color='black', linewidth=1)
+            # Maak een plot-vriendelijke dataset
+            plot_dates = [start_chart_date] + filtered_df['date'].tolist()
+            plot_values = [initial_balance] + filtered_df['Saldo'].tolist()
+
+            fig, ax = plt.subplots(figsize=(10, 5))
+            ax.step(plot_dates, plot_values, where='post', color='blue', linewidth=2, label="Saldo Verloop")
+            
+            # Kleurvlakken (Groen boven nul, Rood onder nul)
+            ax.fill_between(plot_dates, plot_values, 0, where=(pd.Series(plot_values) >= 0), 
+                            color='green', alpha=0.2, step='post')
+            ax.fill_between(plot_dates, plot_values, 0, where=(pd.Series(plot_values) < 0), 
+                            color='red', alpha=0.2, step='post')
+            
+            ax.axhline(0, color='black', linewidth=1, linestyle='--')
+            ax.set_ylabel("Saldo (€)")
+            ax.set_title(f"Saldo evolutie van {start_chart_date} tot {end_chart_date}")
             plt.xticks(rotation=45)
+            plt.grid(True, linestyle=':', alpha=0.6)
             st.pyplot(fig)
         else:
-            st.info("Geen data gevonden voor de geselecteerde periode.")
+            st.info(f"Geen transacties gevonden tussen {start_chart_date} en {end_chart_date}. Het saldo bleef op €{initial_balance:.2f}.")
+    else:
+        st.warning("Voer eerst transacties in om een grafiek te zien.")
 
-# --- PDF EXPORT (VERBETERDE VERSIE TEGEN RUNTIME ERROR) ---
+# --- PDF EXPORT ---
 elif choice == "📄 PDF Export":
     st.subheader("Exporteer naar PDF")
     col_p1, col_p2 = st.columns(2)
-    pdf_date = col_p1.date_input("Startdatum PDF", datetime.now().replace(day=1))
+    pdf_date = col_p1.date_input("Startdatum PDF", datetime.now().date())
     pdf_months = col_p2.selectbox("Aantal maanden", [1, 2, 3, 4])
     
     if st.button("📥 Genereer PDF Overzicht"):
         df = get_all_transactions()
         if not df.empty:
-            # Datum conversies voor correcte vergelijking
             df['date_dt'] = pd.to_datetime(df['date']).dt.date
             today = datetime.now().date()
             end_pdf = pdf_date + timedelta(days=30 * pdf_months)
@@ -188,17 +212,13 @@ elif choice == "📄 PDF Export":
             if pdf_df.empty:
                 st.warning("Geen transacties gevonden voor de geselecteerde periode.")
             else:
-                # PDF genereren in een buffer
                 buffer = io.BytesIO()
                 p = canvas.Canvas(buffer, pagesize=letter)
-                
-                # Titel en Legende
                 p.setFont("Helvetica-Bold", 14)
-                p.drawString(50, 750, f"Financieel Overzicht - Patrick")
+                p.drawString(50, 750, "Financieel Overzicht - Patrick")
                 p.setFont("Helvetica", 10)
                 p.drawString(50, 735, "Legende: VET = verleden/vandaag | CURSIEF = toekomst")
                 
-                # Header
                 y = 710
                 p.setFont("Helvetica-Bold", 9)
                 p.drawString(50, y, "Datum")
@@ -210,14 +230,11 @@ elif choice == "📄 PDF Export":
                 
                 for index, row in pdf_df.iterrows():
                     y -= 20
-                    # Check voor pagina-einde
                     if y < 50:
                         p.showPage()
                         y = 750
                     
                     is_future = row['date_dt'] > today
-                    
-                    # Kies stijl: Helvetica-Bold (Vet) of Helvetica-Oblique (Cursief)
                     current_font = "Helvetica-Oblique" if is_future else "Helvetica-Bold"
                     p.setFont(current_font, 9)
                     
@@ -229,26 +246,18 @@ elif choice == "📄 PDF Export":
                     p.drawString(180, y, desc_display)
                     p.drawString(380, y, f"€{row['amount']:.2f}")
                     
-                    # Kleur voor saldo
-                    if row['Saldo'] < 0:
-                        p.setFillColor(colors.red)
-                    else:
-                        p.setFillColor(colors.green)
+                    if row['Saldo'] < 0: p.setFillColor(colors.red)
+                    else: p.setFillColor(colors.green)
                     
                     p.drawString(480, y, f"€{row['Saldo']:.2f}")
-                    p.setFillColor(colors.black) # Reset naar zwart voor volgende regel
+                    p.setFillColor(colors.black)
 
                 p.showPage()
-                p.save() # Slechts één keer aanroepen aan het einde
-                
-                # De downloadknop
-                st.download_button(
-                    label="Klik hier om PDF te downloaden",
-                    data=buffer.getvalue(),
-                    file_name=f"overzicht_patrick_{datetime.now().strftime('%Y%m%d')}.pdf",
-                    mime="application/pdf"
-                )
+                p.save()
+                st.download_button(label="Klik hier om PDF te downloaden", data=buffer.getvalue(), 
+                                   file_name=f"overzicht_patrick.pdf", mime="application/pdf")
         else:
-            st.warning("De database bevat nog geen transacties.")
+            st.warning("Geen transacties aanwezig.")
+
 
 
