@@ -18,7 +18,6 @@ def init_db():
     c.execute('CREATE TABLE IF NOT EXISTS categories (name TEXT UNIQUE)')
     c.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT UNIQUE, value REAL)')
     c.execute('INSERT OR IGNORE INTO settings (key, value) VALUES ("start_balance", 0.0)')
-    # Standaard categorieën
     for cat in ["Loon", "Boodschappen", "Huur", "Vrije tijd"]:
         c.execute('INSERT OR IGNORE INTO categories (name) VALUES (?)', (cat,))
     conn.commit()
@@ -168,7 +167,7 @@ elif choice == "📊 Grafiek":
         else:
             st.info("Geen data gevonden voor de geselecteerde periode.")
 
-# --- PDF EXPORT ---
+# --- PDF EXPORT (VERBETERDE VERSIE TEGEN RUNTIME ERROR) ---
 elif choice == "📄 PDF Export":
     st.subheader("Exporteer naar PDF")
     col_p1, col_p2 = st.columns(2)
@@ -178,60 +177,78 @@ elif choice == "📄 PDF Export":
     if st.button("📥 Genereer PDF Overzicht"):
         df = get_all_transactions()
         if not df.empty:
-            df['date'] = pd.to_datetime(df['date'])
-            today = pd.Timestamp(datetime.now().date())
-            end_pdf = pd.Timestamp(pdf_date) + timedelta(days=30 * pdf_months)
-            mask = (df['date'] >= pd.Timestamp(pdf_date)) & (df['date'] <= end_pdf)
+            # Datum conversies voor correcte vergelijking
+            df['date_dt'] = pd.to_datetime(df['date']).dt.date
+            today = datetime.now().date()
+            end_pdf = pdf_date + timedelta(days=30 * pdf_months)
+            
+            mask = (df['date_dt'] >= pdf_date) & (df['date_dt'] <= end_pdf)
             pdf_df = df.loc[mask].sort_values(by="date", ascending=False)
             
-            buffer = io.BytesIO()
-            p = canvas.Canvas(buffer, pagesize=letter)
-            p.setFont("Helvetica-Bold", 14)
-            p.drawString(50, 750, f"Financieel Overzicht - Patrick")
-            p.setFont("Helvetica", 10)
-            p.drawString(50, 735, "Legende: VET = verleden/vandaag | CURSIEF = toekomst")
-            
-            y = 700
-            p.setFont("Helvetica-Bold", 9)
-            p.drawString(50, y, "Datum")
-            p.drawString(120, y, "Type")
-            p.drawString(180, y, "Omschrijving")
-            p.drawString(380, y, "Bedrag")
-            p.drawString(480, y, "Saldo")
-            
-            for index, row in pdf_df.iterrows():
-                y -= 20
-                is_future = row['date'] > today
+            if pdf_df.empty:
+                st.warning("Geen transacties gevonden voor de geselecteerde periode.")
+            else:
+                # PDF genereren in een buffer
+                buffer = io.BytesIO()
+                p = canvas.Canvas(buffer, pagesize=letter)
                 
-                # Bepaal lettertype stijl op basis van datum
-                font_style = "Helvetica-Oblique" if is_future else "Helvetica-Bold"
-                p.setFont(font_style, 9)
+                # Titel en Legende
+                p.setFont("Helvetica-Bold", 14)
+                p.drawString(50, 750, f"Financieel Overzicht - Patrick")
+                p.setFont("Helvetica", 10)
+                p.drawString(50, 735, "Legende: VET = verleden/vandaag | CURSIEF = toekomst")
                 
-                p.drawString(50, y, str(row['date'].date()))
-                p.drawString(120, y, str(row['type']))
+                # Header
+                y = 710
+                p.setFont("Helvetica-Bold", 9)
+                p.drawString(50, y, "Datum")
+                p.drawString(120, y, "Type")
+                p.drawString(180, y, "Omschrijving")
+                p.drawString(380, y, "Bedrag")
+                p.drawString(480, y, "Saldo")
+                p.line(50, y-2, 550, y-2)
                 
-                desc_text = str(row['description'])
-                desc_display = (desc_text[:35] + '..') if len(desc_text) > 35 else desc_text
-                p.drawString(180, y, desc_display)
-                p.drawString(380, y, f"€{row['amount']:.2f}")
-                
-                # Kleur voor saldo
-                if row['Saldo'] < 0: p.setFillColor(colors.red)
-                else: p.setFillColor(colors.green)
-                
-                p.drawString(480, y, f"€{row['Saldo']:.2f}")
-                p.setFillColor(colors.black)
-                
-                if y < 50:
-                    p.showPage()
-                    y = 750
+                for index, row in pdf_df.iterrows():
+                    y -= 20
+                    # Check voor pagina-einde
+                    if y < 50:
+                        p.showPage()
+                        y = 750
+                    
+                    is_future = row['date_dt'] > today
+                    
+                    # Kies stijl: Helvetica-Bold (Vet) of Helvetica-Oblique (Cursief)
+                    current_font = "Helvetica-Oblique" if is_future else "Helvetica-Bold"
+                    p.setFont(current_font, 9)
+                    
+                    p.drawString(50, y, str(row['date']))
+                    p.drawString(120, y, str(row['type']))
+                    
+                    desc_text = str(row['description'])
+                    desc_display = (desc_text[:35] + '..') if len(desc_text) > 35 else desc_text
+                    p.drawString(180, y, desc_display)
+                    p.drawString(380, y, f"€{row['amount']:.2f}")
+                    
+                    # Kleur voor saldo
+                    if row['Saldo'] < 0:
+                        p.setFillColor(colors.red)
+                    else:
+                        p.setFillColor(colors.green)
+                    
+                    p.drawString(480, y, f"€{row['Saldo']:.2f}")
+                    p.setFillColor(colors.black) # Reset naar zwart voor volgende regel
 
-            p.save()
-            st.download_button("Download PDF", data=buffer.getvalue(), 
-                               file_name=f"overzicht_patrick.pdf", mime="application/pdf")
+                p.showPage()
+                p.save() # Slechts één keer aanroepen aan het einde
+                
+                # De downloadknop
+                st.download_button(
+                    label="Klik hier om PDF te downloaden",
+                    data=buffer.getvalue(),
+                    file_name=f"overzicht_patrick_{datetime.now().strftime('%Y%m%d')}.pdf",
+                    mime="application/pdf"
+                )
         else:
-            st.warning("Geen transacties gevonden.")
+            st.warning("De database bevat nog geen transacties.")
 
-        p.save()
-        st.download_button("Download PDF", data=buffer.getvalue(), file_name="overzicht.pdf", mime="application/pdf")
 
