@@ -30,7 +30,8 @@ c = conn.cursor()
 # --- HELPER FUNCTIES ---
 def get_start_balance():
     c.execute('SELECT value FROM settings WHERE key="start_balance"')
-    return c.fetchone()[0]
+    res = c.fetchone()
+    return res[0] if res else 0.0
 
 def update_start_balance(new_val):
     c.execute('UPDATE settings SET value = ? WHERE key="start_balance"', (new_val,))
@@ -39,8 +40,11 @@ def update_start_balance(new_val):
 def get_all_transactions():
     df = pd.read_sql_query("SELECT * FROM transactions ORDER BY date ASC", conn)
     start_bal = get_start_balance()
-    # Bereken lopend saldo
-    df['Saldo'] = start_bal + df['amount'].cumsum()
+    # Bereken lopend saldo op 2 decimalen
+    if not df.empty:
+        df['Saldo'] = (start_bal + df['amount'].cumsum()).round(2)
+    else:
+        df['Saldo'] = start_bal
     return df
 
 # --- STREAMLIT UI ---
@@ -54,7 +58,7 @@ choice = st.sidebar.selectbox("Navigatie", menu)
 if choice == "🏠 Dashboard":
     st.subheader("Instellingen")
     current_start = get_start_balance()
-    new_start = st.number_input("Huidig Startsaldo (€)", value=float(current_start), step=10.0)
+    new_start = st.number_input("Huidig Startsaldo (€)", value=float(current_start), step=10.0, format="%.2f")
     if st.button("Startsaldo Bijwerken"):
         update_start_balance(new_start)
         st.success("Startsaldo aangepast!")
@@ -70,7 +74,8 @@ elif choice == "📝 Transacties":
         col1, col2, col3 = st.columns(3)
         t_date = col1.date_input("Datum", datetime.now())
         t_type = col2.selectbox("Type", ["Inkomst", "Uitgave"])
-        t_amt = col3.number_input("Bedrag", min_value=0.01, step=0.01)
+        # AANPASSING: Standaard 0.00
+        t_amt = col3.number_input("Bedrag (€)", min_value=0.00, step=0.01, format="%.2f", value=0.00)
         
         c.execute("SELECT name FROM categories")
         cats = [row[0] for row in c.fetchall()]
@@ -78,26 +83,33 @@ elif choice == "📝 Transacties":
         t_desc = st.text_input("Omschrijving")
         
         if st.form_submit_button("Opslaan"):
-            final_amt = t_amt if t_type == "Inkomst" else -t_amt
-            c.execute("INSERT INTO transactions (date, type, amount, description, category) VALUES (?,?,?,?,?)",
-                      (t_date.strftime("%Y-%m-%d"), t_type, final_amt, t_desc, t_cat))
-            conn.commit()
-            st.success("Transactie opgeslagen!")
+            if t_amt == 0:
+                st.error("Voer een bedrag hoger dan 0 in.")
+            else:
+                final_amt = t_amt if t_type == "Inkomst" else -t_amt
+                c.execute("INSERT INTO transactions (date, type, amount, description, category) VALUES (?,?,?,?,?)",
+                          (t_date.strftime("%Y-%m-%d"), t_type, round(final_amt, 2), t_desc, t_cat))
+                conn.commit()
+                st.success("Transactie opgeslagen!")
+                st.rerun()
 
     st.subheader("Historiek")
     df = get_all_transactions()
     if not df.empty:
-        # Omgekeerde volgorde voor weergave
         df_display = df.sort_values(by="date", ascending=False).copy()
         
-        # Kleurstyling functie
+        # Bedragen formatteren naar 2 decimalen voor weergave
+        df_display['amount'] = df_display['amount'].map('{:,.2f}'.format)
+        df_display['Saldo'] = df_display['Saldo'].map('{:,.2f}'.format)
+
         def color_saldo(val):
-            color = 'green' if val >= 0 else 'red'
+            # Verwijder komma's voor de check
+            clean_val = float(str(val).replace(',', ''))
+            color = 'green' if clean_val >= 0 else 'red'
             return f'color: {color}'
 
-        st.dataframe(df_display.style.applymap(color_saldo, subset=['Saldo']))
+        st.dataframe(df_display.style.applymap(color_saldo, subset=['Saldo']), use_container_width=True)
         
-        # Verwijderen sectie
         st.divider()
         trans_to_del = st.selectbox("Selecteer ID om te verwijderen", df['id'].tolist())
         if st.button("Verwijder Transactie"):
@@ -111,19 +123,20 @@ elif choice == "📁 Categorieën":
     st.subheader("Categoriebeheer")
     new_cat = st.text_input("Nieuwe Categorie Naam")
     if st.button("Toevoegen"):
-        try:
-            c.execute("INSERT INTO categories (name) VALUES (?)", (new_cat,))
-            conn.commit()
-            st.success("Toegevoegd!")
-        except:
-            st.error("Categorie bestaat al.")
+        if new_cat:
+            try:
+                c.execute("INSERT INTO categories (name) VALUES (?)", (new_cat,))
+                conn.commit()
+                st.success("Toegevoegd!")
+                st.rerun()
+            except:
+                st.error("Categorie bestaat al.")
 
     st.write("Bestaande categorieën:")
     c.execute("SELECT name FROM categories")
     for row in c.fetchall():
         col1, col2 = st.columns([3, 1])
         col1.write(row[0])
-        # Check of cat gebruikt wordt
         c.execute("SELECT COUNT(*) FROM transactions WHERE category = ?", (row[0],))
         if c.fetchone()[0] == 0:
             if col2.button("Verwijder", key=row[0]):
@@ -172,27 +185,33 @@ elif choice == "📄 PDF Export":
         
         buffer = io.BytesIO()
         p = canvas.Canvas(buffer, pagesize=letter)
-        p.setFont("Helvetica-Bold", 16)
+        p.setFont("Helvetica-Bold", 14)
         p.drawString(50, 750, "Financieel Overzicht - Patrick")
         
         y = 710
-        p.setFont("Helvetica-Bold", 10)
+        p.setFont("Helvetica-Bold", 9)
         p.drawString(50, y, "Datum")
-        p.drawString(150, y, "Type")
-        p.drawString(250, y, "Bedrag")
-        p.drawString(350, y, "Saldo")
+        p.drawString(120, y, "Type")
+        p.drawString(180, y, "Omschrijving") # AANPASSING: Kolom toegevoegd
+        p.drawString(350, y, "Bedrag")
+        p.drawString(450, y, "Saldo")
         
-        p.setFont("Helvetica", 10)
+        p.setFont("Helvetica", 9)
         for index, row in pdf_df.iterrows():
             y -= 20
             p.drawString(50, y, str(row['date'].date()))
-            p.drawString(150, y, row['type'])
-            p.drawString(250, y, f"€{row['amount']:.2f}")
+            p.drawString(120, y, row['type'])
+            
+            # Omschrijving inkorten indien te lang voor PDF
+            desc = (row['description'][:35] + '..') if len(row['description']) > 35 else row['description']
+            p.drawString(180, y, desc)
+            
+            p.drawString(350, y, f"€{row['amount']:.2f}")
             
             if row['Saldo'] < 0: p.setFillColor(colors.red)
             else: p.setFillColor(colors.green)
             
-            p.drawString(350, y, f"€{row['Saldo']:.2f}")
+            p.drawString(450, y, f"€{row['Saldo']:.2f}")
             p.setFillColor(colors.black)
             
             if y < 50:
