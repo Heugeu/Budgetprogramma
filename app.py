@@ -1,7 +1,6 @@
 import streamlit as st
 import sqlite3
 import pandas as pd
-import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
@@ -53,7 +52,8 @@ st.title("💰 BUDGETPROGRAMMA VAN HEUGEU PATRICK")
 if 'editing_id' not in st.session_state:
     st.session_state.editing_id = None
 
-menu = ["🏠 Dashboard", "📝 Transacties", "📁 Categorieën", "📊 Grafiek", "📄 PDF Export"]
+# HOOFDMENU (ZONDER GRAFIEK)
+menu = ["🏠 Dashboard", "📝 Transacties", "📁 Categorieën", "📄 PDF Export"]
 choice = st.sidebar.selectbox("Navigatie", menu)
 
 # --- DASHBOARD / STARTSALDO ---
@@ -96,7 +96,11 @@ elif choice == "📝 Transacties":
     col1, col2, col3 = st.columns(3)
     t_date = col1.date_input("Datum", default_date, key="in_date")
     t_type = col2.selectbox("Type", ["Inkomst", "Uitgave"], index=0 if default_type == "Inkomst" else 1, key="in_type")
-    t_amt = col3.number_input("Bedrag (€)", min_value=0.00, step=0.01, format="%.2f", value=default_amt, key="in_amt
+    t_amt = col3.number_input("Bedrag (€)", min_value=0.00, step=0.01, format="%.2f", value=default_amt, key="in_amt")
+    
+    c.execute("SELECT name FROM categories")
+    cats = [row[0]
+
 
 
 
