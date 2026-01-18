@@ -40,14 +40,13 @@ def update_start_balance(new_val):
 def get_all_transactions():
     df = pd.read_sql_query("SELECT * FROM transactions ORDER BY date ASC", conn)
     start_bal = get_start_balance()
-    # Bereken lopend saldo op 2 decimalen
     if not df.empty:
         df['Saldo'] = (start_bal + df['amount'].cumsum()).round(2)
     else:
-        df['Saldo'] = start_bal
+        df = pd.DataFrame(columns=['id', 'date', 'type', 'amount', 'description', 'category', 'Saldo'])
     return df
 
-# --- STREAMLIT UI ---
+# --- STREAMLIT UI CONFIG ---
 st.set_page_config(page_title="Budgetprogramma Heugeu Patrick", layout="wide")
 st.title("💰 BUDGETPROGRAMMA VAN HEUGEU PATRICK")
 
@@ -70,49 +69,45 @@ if choice == "🏠 Dashboard":
 # --- TRANSACTIES ---
 elif choice == "📝 Transacties":
     st.subheader("Nieuwe Transactie Toevoegen")
-    with st.form("trans_form"):
-        col1, col2, col3 = st.columns(3)
-        t_date = col1.date_input("Datum", datetime.now())
-        t_type = col2.selectbox("Type", ["Inkomst", "Uitgave"])
-        # AANPASSING: Standaard 0.00
-        t_amt = col3.number_input("Bedrag (€)", min_value=0.00, step=0.01, format="%.2f", value=0.00)
-        
-        c.execute("SELECT name FROM categories")
-        cats = [row[0] for row in c.fetchall()]
-        t_cat = st.selectbox("Categorie", cats)
-        t_desc = st.text_input("Omschrijving")
-        
-        if st.form_submit_button("Opslaan"):
-            if t_amt == 0:
-                st.error("Voer een bedrag hoger dan 0 in.")
-            else:
-                final_amt = t_amt if t_type == "Inkomst" else -t_amt
-                c.execute("INSERT INTO transactions (date, type, amount, description, category) VALUES (?,?,?,?,?)",
-                          (t_date.strftime("%Y-%m-%d"), t_type, round(final_amt, 2), t_desc, t_cat))
-                conn.commit()
-                st.success("Transactie opgeslagen!")
-                st.rerun()
+    col1, col2, col3 = st.columns(3)
+    t_date = col1.date_input("Datum", datetime.now(), key="date")
+    t_type = col2.selectbox("Type", ["Inkomst", "Uitgave"], key="type")
+    t_amt = col3.number_input("Bedrag (€)", min_value=0.00, step=0.01, format="%.2f", value=0.00, key="amt")
+    
+    c.execute("SELECT name FROM categories")
+    cats = [row[0] for row in c.fetchall()]
+    
+    col4, col5 = st.columns([1, 2])
+    t_cat = col4.selectbox("Categorie", cats, key="cat")
+    t_desc = col5.text_input("Omschrijving", key="desc")
+    
+    if st.button("💾 Transactie Opslaan"):
+        if t_amt <= 0:
+            st.error("Voer een bedrag hoger dan 0.00 in.")
+        else:
+            final_amt = t_amt if t_type == "Inkomst" else -t_amt
+            c.execute("INSERT INTO transactions (date, type, amount, description, category) VALUES (?,?,?,?,?)",
+                      (t_date.strftime("%Y-%m-%d"), t_type, round(final_amt, 2), t_desc, t_cat))
+            conn.commit()
+            st.success("Transactie opgeslagen!")
+            st.rerun()
 
+    st.divider()
     st.subheader("Historiek")
     df = get_all_transactions()
     if not df.empty:
         df_display = df.sort_values(by="date", ascending=False).copy()
-        
-        # Bedragen formatteren naar 2 decimalen voor weergave
         df_display['amount'] = df_display['amount'].map('{:,.2f}'.format)
-        df_display['Saldo'] = df_display['Saldo'].map('{:,.2f}'.format)
-
+        
         def color_saldo(val):
-            # Verwijder komma's voor de check
-            clean_val = float(str(val).replace(',', ''))
-            color = 'green' if clean_val >= 0 else 'red'
+            color = 'green' if val >= 0 else 'red'
             return f'color: {color}'
 
         st.dataframe(df_display.style.applymap(color_saldo, subset=['Saldo']), use_container_width=True)
         
         st.divider()
         trans_to_del = st.selectbox("Selecteer ID om te verwijderen", df['id'].tolist())
-        if st.button("Verwijder Transactie"):
+        if st.button("🗑️ Verwijder Transactie"):
             c.execute("DELETE FROM transactions WHERE id = ?", (trans_to_del,))
             conn.commit()
             st.warning(f"Transactie {trans_to_del} verwijderd.")
@@ -127,10 +122,10 @@ elif choice == "📁 Categorieën":
             try:
                 c.execute("INSERT INTO categories (name) VALUES (?)", (new_cat,))
                 conn.commit()
-                st.success("Toegevoegd!")
+                st.success(f"Categorie '{new_cat}' toegevoegd!")
                 st.rerun()
             except:
-                st.error("Categorie bestaat al.")
+                st.error("Deze categorie bestaat al.")
 
     st.write("Bestaande categorieën:")
     c.execute("SELECT name FROM categories")
@@ -138,11 +133,14 @@ elif choice == "📁 Categorieën":
         col1, col2 = st.columns([3, 1])
         col1.write(row[0])
         c.execute("SELECT COUNT(*) FROM transactions WHERE category = ?", (row[0],))
-        if c.fetchone()[0] == 0:
-            if col2.button("Verwijder", key=row[0]):
+        count = c.fetchone()[0]
+        if count == 0:
+            if col2.button("Verwijder", key=f"del_{row[0]}"):
                 c.execute("DELETE FROM categories WHERE name = ?", (row[0],))
                 conn.commit()
                 st.rerun()
+        else:
+            col2.write(f"({count} items)")
 
 # --- GRAFIEK ---
 elif choice == "📊 Grafiek":
@@ -159,7 +157,7 @@ elif choice == "📊 Grafiek":
         
         if not filtered_df.empty:
             fig, ax = plt.subplots(figsize=(10, 4))
-            ax.plot(filtered_df['date'], filtered_df['Saldo'], marker='o', color='blue')
+            ax.plot(filtered_df['date'], filtered_df['Saldo'], marker='o', color='blue', linewidth=2)
             ax.fill_between(filtered_df['date'], filtered_df['Saldo'], 0, 
                             where=(filtered_df['Saldo'] >= 0), color='green', alpha=0.3)
             ax.fill_between(filtered_df['date'], filtered_df['Saldo'], 0, 
@@ -168,55 +166,72 @@ elif choice == "📊 Grafiek":
             plt.xticks(rotation=45)
             st.pyplot(fig)
         else:
-            st.info("Geen data voor deze periode.")
+            st.info("Geen data gevonden voor de geselecteerde periode.")
 
 # --- PDF EXPORT ---
 elif choice == "📄 PDF Export":
     st.subheader("Exporteer naar PDF")
-    pdf_date = st.date_input("Startdatum PDF", datetime.now().replace(day=1))
-    pdf_months = st.selectbox("Aantal maanden", [1, 2, 3, 4])
+    col_p1, col_p2 = st.columns(2)
+    pdf_date = col_p1.date_input("Startdatum PDF", datetime.now().replace(day=1))
+    pdf_months = col_p2.selectbox("Aantal maanden", [1, 2, 3, 4])
     
-    if st.button("Genereer PDF"):
+    if st.button("📥 Genereer PDF Overzicht"):
         df = get_all_transactions()
-        df['date'] = pd.to_datetime(df['date'])
-        end_pdf = pd.Timestamp(pdf_date) + timedelta(days=30 * pdf_months)
-        mask = (df['date'] >= pd.Timestamp(pdf_date)) & (df['date'] <= end_pdf)
-        pdf_df = df.loc[mask].sort_values(by="date", ascending=False)
-        
-        buffer = io.BytesIO()
-        p = canvas.Canvas(buffer, pagesize=letter)
-        p.setFont("Helvetica-Bold", 14)
-        p.drawString(50, 750, "Financieel Overzicht - Patrick")
-        
-        y = 710
-        p.setFont("Helvetica-Bold", 9)
-        p.drawString(50, y, "Datum")
-        p.drawString(120, y, "Type")
-        p.drawString(180, y, "Omschrijving") # AANPASSING: Kolom toegevoegd
-        p.drawString(350, y, "Bedrag")
-        p.drawString(450, y, "Saldo")
-        
-        p.setFont("Helvetica", 9)
-        for index, row in pdf_df.iterrows():
-            y -= 20
-            p.drawString(50, y, str(row['date'].date()))
-            p.drawString(120, y, row['type'])
+        if not df.empty:
+            df['date'] = pd.to_datetime(df['date'])
+            today = pd.Timestamp(datetime.now().date())
+            end_pdf = pd.Timestamp(pdf_date) + timedelta(days=30 * pdf_months)
+            mask = (df['date'] >= pd.Timestamp(pdf_date)) & (df['date'] <= end_pdf)
+            pdf_df = df.loc[mask].sort_values(by="date", ascending=False)
             
-            # Omschrijving inkorten indien te lang voor PDF
-            desc = (row['description'][:35] + '..') if len(row['description']) > 35 else row['description']
-            p.drawString(180, y, desc)
+            buffer = io.BytesIO()
+            p = canvas.Canvas(buffer, pagesize=letter)
+            p.setFont("Helvetica-Bold", 14)
+            p.drawString(50, 750, f"Financieel Overzicht - Patrick")
+            p.setFont("Helvetica", 10)
+            p.drawString(50, 735, "Legende: VET = verleden/vandaag | CURSIEF = toekomst")
             
-            p.drawString(350, y, f"€{row['amount']:.2f}")
+            y = 700
+            p.setFont("Helvetica-Bold", 9)
+            p.drawString(50, y, "Datum")
+            p.drawString(120, y, "Type")
+            p.drawString(180, y, "Omschrijving")
+            p.drawString(380, y, "Bedrag")
+            p.drawString(480, y, "Saldo")
             
-            if row['Saldo'] < 0: p.setFillColor(colors.red)
-            else: p.setFillColor(colors.green)
-            
-            p.drawString(450, y, f"€{row['Saldo']:.2f}")
-            p.setFillColor(colors.black)
-            
-            if y < 50:
-                p.showPage()
-                y = 750
+            for index, row in pdf_df.iterrows():
+                y -= 20
+                is_future = row['date'] > today
+                
+                # Bepaal lettertype stijl op basis van datum
+                font_style = "Helvetica-Oblique" if is_future else "Helvetica-Bold"
+                p.setFont(font_style, 9)
+                
+                p.drawString(50, y, str(row['date'].date()))
+                p.drawString(120, y, str(row['type']))
+                
+                desc_text = str(row['description'])
+                desc_display = (desc_text[:35] + '..') if len(desc_text) > 35 else desc_text
+                p.drawString(180, y, desc_display)
+                p.drawString(380, y, f"€{row['amount']:.2f}")
+                
+                # Kleur voor saldo
+                if row['Saldo'] < 0: p.setFillColor(colors.red)
+                else: p.setFillColor(colors.green)
+                
+                p.drawString(480, y, f"€{row['Saldo']:.2f}")
+                p.setFillColor(colors.black)
+                
+                if y < 50:
+                    p.showPage()
+                    y = 750
+
+            p.save()
+            st.download_button("Download PDF", data=buffer.getvalue(), 
+                               file_name=f"overzicht_patrick.pdf", mime="application/pdf")
+        else:
+            st.warning("Geen transacties gevonden.")
 
         p.save()
         st.download_button("Download PDF", data=buffer.getvalue(), file_name="overzicht.pdf", mime="application/pdf")
+
